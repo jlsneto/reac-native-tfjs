@@ -1,11 +1,12 @@
 // Importações das bibliotecas necessárias
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StyleSheet, Text, View, Dimensions, Platform } from 'react-native';
-import { Camera, CameraType } from 'expo-camera';
+import {BarCodeScanningResult, Camera, CameraType, Point} from 'expo-camera';
 import { StatusBar } from 'expo-status-bar';
 import { bundleResourceIO, cameraWithTensors } from "@tensorflow/tfjs-react-native";
 import * as tf from "@tensorflow/tfjs";
 import { ExpoWebGLRenderingContext } from "expo-gl";
+import {BarCodeScanner} from "expo-barcode-scanner";
 
 // Carrega o modelo de machine learning e seu binário correspondente
 const modelJson = require("./assets/model/marks3/model.json");
@@ -24,6 +25,7 @@ export default function App() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [modelReady, setModelReady] = useState<boolean>(false);
   const [modelOutput, setModelOutput] = useState<string>('');
+  const [qrCodeData, setQrCodeData] = useState<string>('Dados do QrCode: não identificado.');
 
   // Solicita permissão para a câmera e prepara o modelo na montagem do componente
   useEffect(() => {
@@ -48,6 +50,17 @@ export default function App() {
 
   // Ref para manter a referência ao modelo
   const model = useRef<tf.GraphModel | null>(null);
+
+  /**
+   * Calback é executado toda vez que a leitura do QRCode é bem sucedida
+   **/
+  const handleBarCodeScanned = useCallback(async (
+    scanningResult: BarCodeScanningResult,
+  ) => {
+
+    const cornerPoints: Point[] = scanningResult.cornerPoints
+    setQrCodeData(`Dados do QrCode: ${scanningResult.data}`)
+  }, [modelReady])
 
   // Callback que lida com o stream da câmera e faz previsões
   const handleCameraStream = useCallback(async (
@@ -100,6 +113,10 @@ export default function App() {
       {modelReady && (
         <TensorCamera
           // Configurações do componente da câmera
+          barCodeScannerSettings={{
+            barCodeTypes: [BarCodeScanner.Constants.BarCodeType.qr],
+          }}
+          onBarCodeScanned={handleBarCodeScanned}
           ratio={'16:9'}
           pictureSize={"1280x720"}
           style={styles.camera}
@@ -116,6 +133,7 @@ export default function App() {
           onReady={handleCameraStream}
           // Outras propriedades
         />)}
+      <Text style={styles.qrCodeText}>{qrCodeData}</Text>
       <Text style={styles.predictionText}>{modelOutput}</Text>
       <StatusBar style="auto" />
     </View>
@@ -138,6 +156,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     position: 'absolute',
     bottom: 10,
+    left: 10,
+  },
+  qrCodeText: {
+    color: 'white',
+    fontSize: 18,
+    position: 'absolute',
+    top: "60%", // Move o texto do QR Code para cima
     left: 10,
   },
 });
