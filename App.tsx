@@ -8,9 +8,15 @@ import * as tf from "@tensorflow/tfjs";
 import { ExpoWebGLRenderingContext } from "expo-gl";
 import {BarCodeScanner} from "expo-barcode-scanner";
 
+type BoundingBox = [number, number, number, number]; // [x1, y1, x2, y2]
+
+type ProcessedOutput = Array<[number, number, number, number, string, number]>; // [x1, y1, x2, y2, label, probability]
+
 // Carrega o modelo de machine learning e seu binário correspondente
-const modelJson = require("./assets/model/marks3/model.json");
-const modelBin1 = require("./assets/model/marks3/group1-shard1of1.bin");
+const modelJson = require("./assets/model/test_yolo/web_model_v2/model.json");
+const modelBin1 = require("./assets/model/test_yolo/web_model_v2/group1-shard1of3.bin");
+const modelBin2 = require("./assets/model/test_yolo/web_model_v2/group1-shard2of3.bin");
+const modelBin3 = require("./assets/model/test_yolo/web_model_v2/group1-shard3of3.bin");
 
 // Cria um componente de câmera que pode interagir com tensores do TensorFlow
 const TensorCamera = cameraWithTensors(Camera);
@@ -40,7 +46,7 @@ export default function App() {
   const prepareModel = async () => {
     try {
       await tf.ready();
-      model.current = await tf.loadGraphModel(bundleResourceIO(modelJson, [modelBin1]));
+      model.current = await tf.loadGraphModel(bundleResourceIO(modelJson, [modelBin1,modelBin2,modelBin3]));
       console.log("Carregou o modelo")
       setModelReady(true);
     } catch (error) {
@@ -50,6 +56,8 @@ export default function App() {
 
   // Ref para manter a referência ao modelo
   const model = useRef<tf.GraphModel | null>(null);
+
+  const yolo_classes = ['circle'] 
 
   /**
    * Calback é executado toda vez que a leitura do QRCode é bem sucedida
@@ -61,6 +69,64 @@ export default function App() {
     const cornerPoints: Point[] = scanningResult.cornerPoints
     setQrCodeData(`Dados do QrCode: ${scanningResult.data}`)
   }, [modelReady])
+
+  function iou(box1: BoundingBox, box2: BoundingBox): number {
+    return intersection(box1, box2) / union(box1, box2);
+  }
+
+  function union(box1: BoundingBox, box2: BoundingBox): number {
+      const [box1_x1, box1_y1, box1_x2, box1_y2] = box1;
+      const [box2_x1, box2_y1, box2_x2, box2_y2] = box2;
+      const box1_area = (box1_x2 - box1_x1) * (box1_y2 - box1_y1);
+      const box2_area = (box2_x2 - box2_x1) * (box2_y2 - box2_y1);
+      return box1_area + box2_area - intersection(box1, box2);
+  }
+
+  function intersection(box1: BoundingBox, box2: BoundingBox): number {
+      const [box1_x1, box1_y1, box1_x2, box1_y2] = box1;
+      const [box2_x1, box2_y1, box2_x2, box2_y2] = box2;
+      const x1 = Math.max(box1_x1, box2_x1);
+      const y1 = Math.max(box1_y1, box2_y1);
+      const x2 = Math.min(box1_x2, box2_x2);
+      const y2 = Math.min(box1_y2, box2_y2);
+      return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  }
+
+  function process_output(output: tf.Tensor, img_width: number, img_height: number): ProcessedOutput {
+    const outputData = output.dataSync(); // Convert TensorFlow tensor to array synchronously
+
+    let boxes: ProcessedOutput = [];
+    for (let index = 0; index < 8400; index++) {
+        const [class_id, prob] = [...Array(80).keys()]
+            .map(col => [col, outputData[8400 * (col + 4) + index]])
+            .reduce((accum, item) => item[1] > accum[1] ? item : accum, [0, 0]);
+        if (prob < 0.5) {
+            continue;
+        }
+        const label = yolo_classes[class_id];
+        const xc = outputData[index];
+        const yc = outputData[8400 + index];
+        const w = outputData[2 * 8400 + index];
+        const h = outputData[3 * 8400 + index];
+        const x1 = (xc - w / 2) / 640 * img_width;
+        const y1 = (yc - h / 2) / 640 * img_height;
+        const x2 = (xc + w / 2) / 640 * img_width;
+        const y2 = (yc + h / 2) / 640 * img_height;
+        boxes.push([x1, y1, x2, y2, label, prob]);
+    }
+
+    boxes = boxes.sort((box1, box2) => box2[5] - box1[5]);
+    const result: ProcessedOutput = [];
+    while (boxes.length > 0) {
+        const currentBox = boxes[0];
+        const [x1, y1, x2, y2] = currentBox;
+        result.push(currentBox);
+        const slicedBox: BoundingBox = [x1, y1, x2, y2];
+        boxes = boxes.filter(box => iou(slicedBox, box.slice(0, 4) as BoundingBox) < 0.7);
+    }
+    return result;
+}
+
 
   // Callback que lida com o stream da câmera e faz previsões
   const handleCameraStream = useCallback(async (
@@ -83,13 +149,12 @@ export default function App() {
             return inputImage;
           });
           // Faz a previsão usando o modelo
-          const prediction = model.current?.predict(imageTensorPrep) as tf.Tensor;
-          const pred2 = await prediction.data();
-          // Atualiza o estado com a saída do modelo
-          setModelOutput(`Prediction: ${prediction.toString()}`);
-          // Libera recursos do tensor
+          const prediction = model.current?.predict(imageTensorPrep) as tf.Tensor
+          const processedOutput = process_output(prediction, 640, 640);
+          console.log(processedOutput);
+          setModelOutput(`Processed Output: ${JSON.stringify(processedOutput)}`);
           model.current?.disposeIntermediateTensors();
-          tf.dispose([imageTensorPrep, prediction, pred2]);
+          tf.dispose([imageTensorPrep, prediction]);
         }
       }
       // Solicita o próximo frame para processamento
@@ -123,10 +188,10 @@ export default function App() {
           autorender={false}
           type={CameraType.back}
           // Propriedades relacionadas ao tensor
-          resizeWidth={384}
+          resizeWidth={640}
           resizeHeight={640}
           useCustomShadersToResize={false}
-          cameraTextureHeight={384}
+          cameraTextureHeight={640}
           cameraTextureWidth={640}
           resizeDepth={3}
           rotation={0}
