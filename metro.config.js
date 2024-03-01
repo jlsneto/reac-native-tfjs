@@ -8,7 +8,7 @@ module.exports = (() => {
     const {assetExts, sourceExts} = defaultConfig.resolver
     return {
         resolver: {
-            assetExts: [...assetExts, 'bin'],
+            assetExts: [...assetExts, 'bin', 'css'],
             sourceExts: [...sourceExts, 'mjs', 'cjs']
         }
     }

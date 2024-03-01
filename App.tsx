@@ -1,13 +1,15 @@
 // Importações das bibliotecas necessárias
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StyleSheet, Text, View, Dimensions, Platform } from 'react-native';
+import React, {useState, useEffect, useRef, useCallback} from 'react';
+import {StyleSheet, Text, View, Dimensions, Platform, TouchableOpacity, Image} from 'react-native';
 import {BarCodeScanningResult, Camera, CameraType, Point} from 'expo-camera';
-import { StatusBar } from 'expo-status-bar';
-import { bundleResourceIO, cameraWithTensors } from "@tensorflow/tfjs-react-native";
+import {StatusBar} from 'expo-status-bar';
+import {bundleResourceIO, cameraWithTensors} from "@tensorflow/tfjs-react-native";
 import * as tf from "@tensorflow/tfjs";
-import { ExpoWebGLRenderingContext } from "expo-gl";
+import {ExpoWebGLRenderingContext} from "expo-gl";
 import {BarCodeScanner} from "expo-barcode-scanner";
+import Loading from "./Loading";
 
+const localImageSource = require('./assets/CaptureButton.png')
 // Carrega o modelo de machine learning e seu binário correspondente
 const modelJson = require("./assets/model/marks3/model.json");
 const modelBin1 = require("./assets/model/marks3/group1-shard1of1.bin");
@@ -26,11 +28,13 @@ export default function App() {
   const [modelReady, setModelReady] = useState<boolean>(false);
   const [modelOutput, setModelOutput] = useState<string>('');
   const [qrCodeData, setQrCodeData] = useState<string>('Dados do QrCode: não identificado.');
-
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  let camera: Camera | null = null
   // Solicita permissão para a câmera e prepara o modelo na montagem do componente
   useEffect(() => {
     (async () => {
-      const { status } = await Camera.requestCameraPermissionsAsync();
+      const {status} = await Camera.requestCameraPermissionsAsync();
       setHasPermission(status === 'granted');
     })();
     prepareModel();
@@ -101,41 +105,120 @@ export default function App() {
 
   // Verifica o estado da permissão da câmera antes de renderizar
   if (hasPermission === null) {
-    return <View />;
+    return <View/>;
   }
   if (!hasPermission) {
     return <Text>No access to camera</Text>;
   }
 
+  const uploadImage = (imageUrl: string) => {
+    const formData: FormData = new FormData();
+    formData.append('image', {
+      uri: imageUrl,
+      type: 'image/jpeg',
+      name: 'cropped_image.jpg',
+    });
+    fetch(
+      'https://e918-2804-1b1-220c-153c-bd53-1972-7d00-6c34.ngrok-free.app/scanner',
+      {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      },
+    )
+      .then(response => response.json())
+      .then(data => {
+        setCapturedImage(data["image_marked"])
+        setIsLoading(false)
+        // console.log('Resposta da API:', data);
+      })
+      .catch(error => {
+        console.log('Erro ao enviar a imagem para a API:', error);
+      });
+  };
+  const cleanImage = async () => {
+    setCapturedImage(null)
+  }
+  const takePicture = async () => {
+    try {
+      console.log('LOGCAT_TAG: Trying to use Native Module.....')
+
+      camera?.takePictureAsync({base64: true}).then(picture => {
+
+        if (picture.base64) {
+          console.log("Tirou foto")
+          console.log(picture.uri)
+          setIsLoading(true)
+          uploadImage(picture.uri)
+
+          // const predictions = model.current?.predict(tf.expandDims(tf.image.rgbToGrayscale(imageTensor), 0)) as tf.Tensor
+          // console.log("predicionts shape", predictions.shape);
+        }
+      })
+    } catch (error) {
+      console.error('An camera error occurred:', error)
+    }
+  }
+
   // Renderiza a câmera e a saída do modelo
   return (
     <View style={styles.container}>
-      {modelReady && (
-        <TensorCamera
+      <Loading isLoading={isLoading} statusText="Loading..." />
+      {(capturedImage && !isLoading) ? (
+        <View>
+        <Image
+          source={{ uri: capturedImage }}
+          style={styles.capturedImage}
+        />
+          <View style={styles.buttonContainer}>
+            <View style={styles.button}>
+              <TouchableOpacity
+                onPress={cleanImage}
+                style={{display: 'flex'}}
+              >
+                <View style={{padding: 2}}>
+                  <Image source={localImageSource}/>
+                </View>
+                <Text style={styles.text}>Escanear</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      ) : (modelReady && !isLoading) && (
+        <Camera
           // Configurações do componente da câmera
           barCodeScannerSettings={{
             barCodeTypes: [BarCodeScanner.Constants.BarCodeType.qr],
           }}
           onBarCodeScanned={handleBarCodeScanned}
           ratio={'16:9'}
-          pictureSize={"1280x720"}
+          // pictureSize={"1280x720"}
           style={styles.camera}
-          autorender={false}
           type={CameraType.back}
-          // Propriedades relacionadas ao tensor
-          resizeWidth={384}
-          resizeHeight={640}
-          useCustomShadersToResize={false}
-          cameraTextureHeight={384}
-          cameraTextureWidth={640}
-          resizeDepth={3}
-          rotation={0}
-          onReady={handleCameraStream}
-          // Outras propriedades
-        />)}
-      <Text style={styles.qrCodeText}>{qrCodeData}</Text>
-      <Text style={styles.predictionText}>{modelOutput}</Text>
-      <StatusBar style="auto" />
+          ref={r => {
+            camera = r
+          }}
+
+        >
+          <View style={styles.buttonContainer}>
+            <View style={styles.button}>
+              <TouchableOpacity
+                onPress={takePicture}
+                style={{display: 'flex'}}
+              >
+                <View style={{padding: 2}}>
+                  <Image source={localImageSource}/>
+                </View>
+                <Text style={styles.text}>Escanear</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          <Text style={styles.qrCodeText}>{qrCodeData}</Text>
+          <Text style={styles.predictionText}>{modelOutput}</Text>
+          <StatusBar style="auto" />
+        </Camera>)}
     </View>
   );
 }
@@ -164,5 +247,29 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: "60%", // Move o texto do QR Code para cima
     left: 10,
+  },
+  buttonContainer: {
+    flex: 1,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    backgroundColor: 'transparent',
+    margin: 24,
+  },
+  button: {
+    flex: 2,
+    alignSelf: 'flex-end',
+    alignItems: 'center',
+  },
+  text: {
+    fontSize: 16,
+    color: '#0C326F',
+  },
+  capturedImage: {
+    // width: "100%",
+    top: 50,
+    // width: "50%",
+    height: 700,
+    // padding: 100,
+    margin: 20
   },
 });
